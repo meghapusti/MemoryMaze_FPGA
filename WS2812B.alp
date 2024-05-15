@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="WS2812B" board="Alchitry Au" language="Lucid" version="3">
+  <files>
+    <src top="true">au_top.luc</src>
+    <src>data_ram.luc</src>
+    <component>simple_dual_ram.v</component>
+    <src>ws2812b_writer.luc</src>
+    <src>reverser.luc</src>
+    <src>map_rom.luc</src>
+    <component>pipeline.luc</component>
+    <component>counter.luc</component>
+    <component>reset_conditioner.luc</component>
+    <component>edge_detector.luc</component>
+    <component>button_conditioner.luc</component>
+    <constraint>custom.acf</constraint>
+    <constraint lib="true">au.xdc</constraint>
+  </files>
+</project>

@@ -1,0 +1,124 @@
+module ws2812b_writer #(
+    PIXEL_COUNT = 256 : PIXEL_COUNT > 0  		// The number of LEDs in the chain.
+  )(
+    input clk,  // clock
+    input rst,  // reset
+    input update, // feed '1' to update the display with new 'color', if '0' then it will stay displaying its old value
+    // WS2812B expects the first 8 bits sent to be G, then R (next 8), then B (next next 8)
+    // Hence, we need to pack the 8 bits for G in the lower bits, then R, then B as the highest 8 bits in Lucid
+    // 24-bit color: B0 B1 B2 B3 B4 B5 B6 B7 R0 R1 R2 R3 R4 R5 R6 R7 G0 G1 G2 G3 G4 G5 G6 G7 
+    // Note that the high bit is B7, and the low bit is B0 for the 8-bit color BLUE (same with red and green)
+    // eg: if you want the color NAVY, you will find that B should be 0x80. 
+    // This means B7 is 1 and you need to flip it in BINARY for Lucid to work, effectively having 0x01 for BLUE part.
+    input color[24],   			// BRG, 8 bits each, color to render for all LED
+    input clear, // this will clear the LED matrix regardless of update 
+    output pixel_address[$clog2(PIXEL_COUNT)],  // Index of the LED, with the color in color[24]
+    output led,		//Goes to the first LED in the chain
+    output next_pixel, // this turns to 1 for 1 FPGA clock cycle each time we are done with writing a pixel 
+    output reset, // this turns to 1 when we are at RESET state
+    output done // this turns to 1 once we have refreshed all pixels in the LED
+
+  ) {
+  
+  .clk(clk) {
+    .rst(rst) {
+      fsm state(#INIT(RESET)) = {SEND_PIXEL, RESET, CLEAR}; // start at RESET state, don't show anything yet
+      dff pixel_address_ctr[$clog2(PIXEL_COUNT)](#INIT(0));
+      dff bit_ctr[5];
+      dff ctr[7];
+      dff rst_ctr [$clog2(5000)]; //reset requires 50us of zeroes 
+      dff update_request(#INIT(0), .clk(clk), .rst(rst)); // to store update request so we don't miss it 
+      dff clear_request(#INIT(1), .clk(clk), .rst(rst)); // to store clear request so we don't miss it, initialised to 0 so we always clear LED upon boot
+    }
+  }
+  
+  always {
+    led = 0;
+    reset = 0; // not resetting by default
+    next_pixel = 0; // not done with any pixel
+    pixel_address = pixel_address_ctr.q;
+    
+    // always store update request if it's not set 
+    if (~update_request.q){
+          update_request.d = update; 
+    }
+    
+    // always store clear request if it's not set
+    if (~clear_request.q){
+          clear_request.d = clear; 
+    }
+    
+    done = 0;
+    
+    case (state.q) {
+      state.SEND_PIXEL:
+        if (color[bit_ctr.q]) // if current bit is HIGH, send 80 1's and 45 0's
+          led = ctr.q < 80;
+        else // if current bit is LOW, send 40 1's, and 85 0's
+          led = ctr.q < 40;
+        
+        ctr.d = ctr.q + 1;
+        if (ctr.q == 125){ // check if you can send next bit 
+          ctr.d = 0;
+          
+          bit_ctr.d = bit_ctr.q + 1;
+          if (bit_ctr.q == 23) { // check if you have sent all 24 bits 
+            bit_ctr.d = 0; // reset bit counter 
+            next_pixel = 1; // safe to change pixel
+            pixel_address_ctr.d = pixel_address_ctr.q + 1; // advance pixel counter
+            if (pixel_address_ctr.q == PIXEL_COUNT-1) { // check if you have sent data to all LEDs
+              done = 1;
+              state.d = state.RESET;
+            }
+          }
+        }
+      
+      state.RESET:
+        // this resets the contents of the shift registers after we have latched all the pixel values 
+        reset = 1;
+        // if contents of rst_ctr.q is all 1, we choose what to do: 
+        // - remain at RESET and let LEDs display old values, or 
+        // - refresh our LEDs with new values
+        if (&rst_ctr.q) { 
+          if (update_request.q) {
+            update_request.d = 0; // clear the update request
+            rst_ctr.d = 0;
+            pixel_address_ctr.d = 0; // reset pixel counter
+            state.d = state.SEND_PIXEL; // go back to update the entire strip again 
+          }
+          
+          // if both update and clear is 1, then clear will take priority
+          // it will also clear update_request although CLEAR and not SEND_PIXEL is executed
+          if (clear_request.q){
+            clear_request.d = 0; // clear the clear request
+            rst_ctr.d = 0;
+            pixel_address_ctr.d = 0; // reset pixel counter
+            state.d = state.CLEAR; // send all 0s
+          }
+        } 
+          
+        else {
+          // still at reset, continue
+          rst_ctr.d = rst_ctr.q + 1;
+        }
+        
+      state.CLEAR:
+        // send 40 1's, and 85 0's
+        led = ctr.q < 40;
+        
+        ctr.d = ctr.q + 1;
+        if (ctr.q == 125){ // check if you can send next bit 
+          ctr.d = 0;
+          
+          bit_ctr.d = bit_ctr.q + 1;
+          if (bit_ctr.q == 23) { // check if you have sent all 24 bits 
+            bit_ctr.d = 0; // reset bit counter 
+            pixel_address_ctr.d = pixel_address_ctr.q + 1; // advance pixel counter
+            if (pixel_address_ctr.q == PIXEL_COUNT-1) { // check if you have sent data to all LEDs
+              state.d = state.RESET;
+            }
+          }
+        }      
+        
+  }
+}

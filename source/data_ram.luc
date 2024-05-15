@@ -1,0 +1,222 @@
+module data_ram #(
+    ROW_DIMENSION = 4 : ROW_DIMENSION > 0,
+    COLUMN_DIMENSION = 4 : COLUMN_DIMENSION > 0,
+    ENCODING_AMOUNT = 4 : ENCODING_AMOUNT > 0
+    )(
+    input clk,  // clock
+    input rst,  // reset
+    input update,
+    input player_x_pos[2],
+    input player_y_pos[2],
+    input address[$clog2(ROW_DIMENSION*COLUMN_DIMENSION)],
+    input start,
+    input clear,
+    input map_num_au[2],
+    output out_encoding[2],
+    output ready,
+    output clear_to_au,
+    output i_lost,
+    output i_won,
+    output debug_address_pointer[$clog2(ROW_DIMENSION*COLUMN_DIMENSION)],
+    output debug_data[3]
+  ) {
+  
+  const DEPTH =  COLUMN_DIMENSION * ROW_DIMENSION;
+  fsm writer(.clk(clk), .rst(rst)) = { //now clear is before init
+    INIT, 
+    CLEAR, 
+    WRITE,
+    ERASE, 
+    CHECK,
+    LOSE,
+    WIN,
+    IDLE
+    };
+  dff writer_pointer[$clog2(DEPTH)](#INIT(0),.clk(clk), .rst(rst));
+  dff update_flag(#INIT(0), .clk(clk), .rst(rst));
+  dff start_flag(#INIT(0), .clk(clk), .rst(rst));
+  dff clear_flag(#INIT(0), .clk(clk), .rst(rst)); //clear
+  dff counter[27](.clk(clk), .rst(rst), #INIT(0)); //can use to stop flashing map
+  
+  const BACKGROUND_COLOR = b00;
+  const PLAYER_COLOR = b11;
+  const LOSE_COLOR = b01;
+  const WIN_COLOR = b10; 
+  
+  alu alU;
+  alu alU2;
+  alu alU3;
+  
+  map_rom mapRom;
+  simple_dual_ram ram(.rclk(clk), .wclk(clk), #DEPTH(DEPTH), #SIZE($clog2(ENCODING_AMOUNT)));
+  
+  always {
+    ram.raddr = 0;
+    ram.waddr = 0;
+    ram.write_data = 0;
+    ram.write_en = 0;
+    mapRom.map_num = map_num_au;
+    clear_to_au = 0;
+    i_lost =0;
+    i_won =0;
+    
+    alU.alufn_signal =0;
+    alU.a = 0;
+    alU.b =0;
+    
+    alU2.alufn_signal =0;
+    alU2.a = 0;
+    alU2.b =0;
+    
+    alU3.alufn_signal =0;
+    alU3.a = 0;
+    alU3.b =0;
+
+    out_encoding = 0;
+    debug_data = 0;
+    
+    ready = writer.q == writer.IDLE; 
+    debug_address_pointer = writer_pointer.q;
+    
+    // always catch any positive update request 
+    if (update){
+      update_flag.d = update;
+    }
+    if (start){ 
+      start_flag.d = start;
+    }
+    if (clear){ 
+      clear_flag.d = clear;
+    }
+     
+    if (start_flag.q){ 
+    start_flag.d = 0;
+    writer_pointer.d =0; 
+    writer.d =writer.INIT;} 
+           
+    else{ 
+
+    case (writer.q){
+       
+      writer.INIT: 
+        writer_pointer.d =0; //will this do anything? no
+        ram.write_en = b1; 
+        ram.waddr = writer_pointer.q;
+        ram.write_data = mapRom.out_encoding[writer_pointer.q];
+        alU.alufn_signal = b000000; //ADD
+        alU.a = writer_pointer.q;
+        alU.b = 1;
+        writer_pointer.d = alU.out[3:0];
+        //writer_pointer.d = writer_pointer.q + 1; 
+        clear_flag.d = 1; //clear 
+        debug_data = b001;      
+        i_lost =0;
+        i_won =0;
+        if (&writer_pointer.q){
+          debug_data = b001;
+          counter.d = 0;
+          alU2.alufn_signal =b100000; //SHL
+          alU2.a = player_y_pos;
+          alU2.b = 2; //shift by 2 bits = *4
+          alU3.alufn_signal = b000000; //ADD
+          alU3.a = alU2.out;
+          alU3.b = player_x_pos;
+          writer_pointer.d = alU3.out[3:0];       
+          //writer_pointer.d =player_y_pos*4 + player_x_pos; //to prevent erase at wrong place
+          writer.d=writer.IDLE; //does the position of this line of code matter? NO
+        }
+          
+        writer.CLEAR:
+          writer_pointer.d =0; //will this do anything? no
+          ram.write_en = b1; 
+          ram.waddr = writer_pointer.q;
+          ram.write_data = BACKGROUND_COLOR; 
+          alU.alufn_signal = b000000; //ADD
+          alU.a = writer_pointer.q;
+          alU.b = 1;
+          writer_pointer.d = alU.out[3:0];
+          //writer_pointer.d = writer_pointer.q + 1; 
+          debug_data = b010;  
+          clear_flag.d = 0;
+          if (&writer_pointer.q){
+              clear_to_au = 1;
+              debug_data = b010; 
+              writer.d = writer.WRITE;
+              alU2.alufn_signal =b100000; //SHL
+              alU2.a = player_y_pos;
+              alU2.b = 2; //shift by 2 bits = *4
+              alU3.alufn_signal = b000000; //ADD
+              alU3.a = alU2.out;
+              alU3.b = player_x_pos;
+              writer_pointer.d = alU3.out[3:0];
+                } 
+    
+      writer.ERASE: 
+        ram.write_en = b1; 
+        ram.waddr = writer_pointer.q; // this is old player address 
+        ram.write_data = BACKGROUND_COLOR; // set back to background color 
+        writer.d = writer.WRITE;
+        alU2.alufn_signal =b100000; //SHL
+        alU2.a = player_y_pos;
+        alU2.b = 2; //shift by 2 bits = *4
+        alU3.alufn_signal = b000000; //ADD
+        alU3.a = alU2.out;
+        alU3.b = player_x_pos;
+        writer_pointer.d = alU3.out[3:0];
+        //writer_pointer.d = player_y_pos*4 + player_x_pos; // update player position
+        debug_data = b011;
+           
+      writer.WRITE:
+        ram.write_en = b1; // enable the dual ram write
+        ram.waddr = writer_pointer.q; // write to the respective address
+        ram.write_data = PLAYER_COLOR; // write player position (white)
+        writer.d = writer.CHECK;
+        debug_data = b100;
+       
+      writer.CHECK:
+        ram.write_en = b0;
+        debug_data = b101;
+        if (mapRom.out_encoding[writer_pointer.q] == LOSE_COLOR){ //if current location is red
+          writer_pointer.d =0;
+          writer.d = writer.LOSE;
+        }
+        else if (mapRom.out_encoding[writer_pointer.q] == WIN_COLOR){ //if current location is green
+          writer_pointer.d =0;
+          writer.d = writer.WIN;
+        }    
+            
+        else{
+        writer.d = writer.IDLE;
+        }
+        debug_data = b100;
+        
+      writer.LOSE:
+        i_lost =1;     
+        debug_data = b110;
+          
+       writer.WIN:
+        i_won =1;
+     
+      writer.IDLE:
+        if (writer.q == writer.LOSE){
+          i_lost =1;}
+        if (writer.q == writer.WIN){
+          i_won =1;}
+        ram.raddr = address;
+        out_encoding = ram.read_data;
+        debug_data = b111;  // for debugging
+        writer.d = writer.IDLE; // remain in state
+        if (update_flag.q){
+            update_flag.d = 0;
+            writer.d = writer.ERASE;
+        }
+
+        if(clear_flag.q){
+        counter.d = counter.q + 1;
+          if (&counter.q){
+           writer_pointer.d =0;
+          writer.d = writer.CLEAR;}
+   } 
+  }
+ }
+}

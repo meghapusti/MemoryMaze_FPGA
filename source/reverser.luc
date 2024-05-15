@@ -1,0 +1,81 @@
+/*
+   This module reverse every ODD row's index based on COLUMN_DIMENSION 
+   
+    EXAMPLE: 16x16 ws2812b matrix transformation logic
+    - pixel 0 to 15 is not reversed,  current row is 0 multiple of 16 
+    - pixel 16 to 31 is reversed, becomes 31 to 16, current row is 1 multiple of 16 
+      16 --> 31
+      17 ---> 30 
+      31 ---> 16 
+    - pixel 32 to 47 is not reversed, current row is 2 multiple of 16 
+    - pixel 48 to 63 is reversed,  current row is 3 multiple of 16 
+      48 ---> 63 
+      49 ---> 62 
+
+      We can reverse the index by keeping the higher bit, and do a 1s complement of the lower COLUMN_DIMENSION bits (bitwise XOR with 1)
+      For instance:
+     - 17: 10001, 30: 11110
+     - 31: 11111, 16: 10000
+   */
+
+module reverser #(
+  COLUMN_DIMENSION = 4 : COLUMN_DIMENSION > 0,
+  ROW_DIMENSION = 4 : ROW_DIMENSION > 0,
+  ENCODING_AMOUNT = 1 : ENCODING_AMOUNT > 0
+  )(
+    input clk,  // clock
+    input rst,  // reset
+
+    input original_pixel_address[$clog2(COLUMN_DIMENSION*ROW_DIMENSION)],
+    input activate,
+    input writer_pixel_done,
+    output effective_pixel_address[$clog2(COLUMN_DIMENSION*ROW_DIMENSION)]
+  ) {
+  
+  const PIXEL_COUNT = COLUMN_DIMENSION * ROW_DIMENSION;
+  const COLUMN_DIMENSION_BITS = $clog2(COLUMN_DIMENSION); // number of bits needed to represent which column we are currently at
+  const HIGHER_BITS = $clog2(PIXEL_COUNT) - COLUMN_DIMENSION_BITS;
+  
+  sig reversed_pixel_address[$clog2(COLUMN_DIMENSION*ROW_DIMENSION)];
+  // helper bits to reverse every other row if we are using ws2812b matrix
+  dff reverse(.clk(clk), .rst(rst), #INIT(0));
+  
+  always {
+    
+    // check odd or even row multiple of COLUMN_DIMENSION
+    if (original_pixel_address[COLUMN_DIMENSION_BITS]){
+      // flip 
+      // we are at odd row multiple
+      reversed_pixel_address = original_pixel_address ^ c{HIGHER_BITSx{b0},COLUMN_DIMENSION_BITSx{b1}}; // higher bits stays the same 
+    }
+    else{
+      reversed_pixel_address = original_pixel_address;
+    }
+    
+    
+    if (activate){ // if we decide to flip the leftmost bit, we reverse every other row
+      // reverse every other row
+      effective_pixel_address = reversed_pixel_address;
+    }
+    else{
+      // don't reverse every other row 
+      effective_pixel_address = original_pixel_address;
+    }
+    
+    if  (&original_pixel_address[COLUMN_DIMENSION_BITS-1:0] & writer_pixel_done){
+      reverse.d = reverse.q + 1; // toggle the reverse flag, test 1
+    }
+    
+    if (reverse.q)
+    {
+       reversed_pixel_address = original_pixel_address ^ c{HIGHER_BITSx{b0},COLUMN_DIMENSION_BITSx{b1}}; // higher bits stays the same 
+      // reversed_pixel_address = 0; // test color at 0 which is 11 --> white
+     }
+    else
+    {
+      reversed_pixel_address = original_pixel_address;
+    }
+
+    
+  }
+}

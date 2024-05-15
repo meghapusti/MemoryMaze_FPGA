@@ -1,0 +1,435 @@
+module au_top (
+    input clk,              // 100MHz clock
+    input rst_n,            // reset button (active low)
+    output led [8],         // 8 user controllable LEDs
+    input usb_rx,           // USB->Serial input
+    output outled,           // to LED strip, Br pin C40, connect LED Strip to 5V for power
+    output outled2,          // to player 2 LED strip, Br pin D11, connect LED Strip to 5V for power
+    output usb_tx,          // USB->Serial output
+    output io_led [3][8],   // LEDs on IO Shield
+    output io_seg [8],      // 7-segment LEDs on IO Shield
+    output io_sel [4],      // Digit select on IO Shield
+    input io_button [5],    // 5 buttons on IO Shield
+    
+    input start,
+    
+    input p1_up,
+    input p1_down,
+    input p1_left,
+    input p1_right,
+    
+    input p2_up,
+    input p2_down,
+    input p2_left,
+    input p2_right,
+    
+    input io_dip [3][8]     // DIP switches on IO Shield //just keep the yellow line
+  ) {
+  
+  // We use a 4x4 WS2812B matrix
+  // We shall always assume that COLUMN_DIMENSION and ROW_DIMENSION is a 2^x
+  const COLUMN_DIMENSION = 4; // how many "columns"? 
+  const ROW_DIMENSION = 4; // how many "rows"?
+
+  const PIXEL_COUNT = COLUMN_DIMENSION *  ROW_DIMENSION;   
+  const ENCODING_AMOUNT = 4; // how many different encodings are used? As example, we use 4 colors, hence ENCODING_AMOUNT is 4
+  
+  // This is our game's custom encoding
+  // WHITE (11): START/PLAYER, GREEN (10): GOAL,  RED (01): RESTRICTED, BLACK (00): NOTHING
+  const LEDCOLOR = {24hFFFFFF, 24h0000FF, 24h00FF00, 24h000000}; 
+  sig rst; // reset signal
+
+  dff rom_address[$clog2(ROW_DIMENSION)](.clk(clk), #INIT(1), .rst(rst));
+
+  //the data_ram takes care of movement and checking the position
+  data_ram ram_p1(#ROW_DIMENSION(ROW_DIMENSION), #ENCODING_AMOUNT(ENCODING_AMOUNT), #COLUMN_DIMENSION(COLUMN_DIMENSION), .clk(clk), .rst(rst));
+  data_ram ram_p2(#ROW_DIMENSION(ROW_DIMENSION), #ENCODING_AMOUNT(ENCODING_AMOUNT), #COLUMN_DIMENSION(COLUMN_DIMENSION), .clk(clk), .rst(rst));
+  
+  alu alU; //i add alu
+  alu alU2; //i add alu
+  
+  // 0,0 is at the top left of LED matrix: Check this with your matrix orientation
+  // right ---> x ++
+  // left ---> x -- 
+  // down ---> y++ 
+  dff p1_x_pos[2](.clk(clk), #INIT(00), .rst(rst));
+  dff p1_y_pos[2](.clk(clk), #INIT(00), .rst(rst));
+  dff p2_x_pos[2](.clk(clk), #INIT(00), .rst(rst));
+  dff p2_y_pos[2](.clk(clk), #INIT(00), .rst(rst));
+  
+  dff update_ram_p1_flag(.clk(clk), #INIT(0), .rst(rst));
+  dff start_ram_p1_flag(.clk(clk), #INIT(0), .rst(rst));
+  
+  dff update_ram_p2_flag(.clk(clk), #INIT(0), .rst(rst));
+  dff start_ram_p2_flag(.clk(clk), #INIT(0), .rst(rst));
+
+  ws2812b_writer led_strip_p1(#PIXEL_COUNT(PIXEL_COUNT), .clk(clk), .rst(rst)); 
+  ws2812b_writer led_strip_p2(#PIXEL_COUNT(PIXEL_COUNT), .clk(clk), .rst(rst)); 
+  
+  fsm state(.clk(clk), .rst(rst)) = {IDLE, UPDATE_RAM_P1, REFRESH_P1, UPDATE_RAM_P2, REFRESH_P2, WAIT};
+  
+  reverser index_reverser1(#COLUMN_DIMENSION(COLUMN_DIMENSION), #ROW_DIMENSION(ROW_DIMENSION), .clk(clk), .rst(rst));
+  reverser index_reverser2(#COLUMN_DIMENSION(COLUMN_DIMENSION), #ROW_DIMENSION(ROW_DIMENSION), .clk(clk), .rst(rst));
+  
+  // user inputs 
+  button_conditioner p1_movement_button[4](.clk(clk));
+  button_conditioner p2_movement_button[4](.clk(clk));
+  edge_detector p1_movement_button_edge[4](.clk(clk), #RISE(1), #FALL(0));
+  edge_detector p2_movement_button_edge[4](.clk(clk), #RISE(1), #FALL(0));
+  button_conditioner start_button(.clk(clk)); //io_button 1: centre
+  edge_detector start_button_edge(.clk(clk), #RISE(1), #FALL(0));
+ 
+  
+  .clk(clk) {
+    // The reset conditioner is used to synchronize the reset signal to the FPGA
+    // clock. This ensures the entire FPGA comes out of reset at the same time.
+    reset_conditioner reset_cond;
+  }
+  
+  always {
+    reset_cond.in = ~rst_n; // input raw inverted reset signal
+    rst = reset_cond.out;   // conditioned reset
+    
+    usb_tx = usb_rx;        // loop serial port
+    
+    led = 8h00;             // turn LEDs off
+    
+    io_led = 3x{{8h00}};    // turn LEDs off
+    io_seg = 8hff;          // turn segments off
+    io_sel = 4hf;           // select no digits
+    
+    ram_p1.address = 0;        // address 0 selected by default
+    ram_p1.map_num_au = 0;
+    ram_p2.address = 0;        // address 0 selected by default
+    ram_p2.map_num_au = 0;
+    ram_p1.clear =0;
+    ram_p2.clear =0;
+    
+    led_strip_p1.color = LEDCOLOR[b11];
+    
+    alU.alufn_signal =0;
+    alU.a = 0;
+    alU.b =0;
+    
+    alU2.alufn_signal =0;
+    alU2.a = 0;
+    alU2.b =0;
+
+    p1_movement_button.in = c{p1_right, p1_left, p1_down, p1_up}; // right, left, down, up
+    p1_movement_button_edge.in = p1_movement_button.out;
+    
+    p2_movement_button.in = c{p2_right, p2_left, p2_down, p2_up}; // right, left, down, up
+    p2_movement_button_edge.in = p2_movement_button.out;
+    
+    
+    start_button.in = start; // use this button to load map
+    start_button_edge.in = start_button.out;
+    
+    ///////////////////player 1 movement////////////////////////////////////////////////////////////
+    // the matrix we use has top left as 0,0
+    // check player movement update 
+    if (p1_movement_button_edge.out[0]){ //up
+      alU2.alufn_signal = b011110; //OR
+      alU2.a = p1_y_pos.q;
+      alU2.b = 0;   
+      if (alU2.out){ //y is not 0 -> can move up
+          alU.alufn_signal = b000001; //SUB (because up decreases y coordinate in the ram_p1)
+          alU.a = p1_y_pos.q;
+          alU.b = 1;
+         p1_y_pos.d = alU.out[1:0];
+      }
+    }
+    
+    if (p1_movement_button_edge.out[1]){
+      alU2.alufn_signal = b110101; //CMPLT
+      alU2.a = p1_y_pos.q;
+      alU2.b = COLUMN_DIMENSION-1;
+      if (alU2.out){ //player_y_pos.q < 3 can move down
+          alU.alufn_signal = b000000; //ADD (because down increases y coordinate in the ram_p1
+          alU.a = p1_y_pos.q;
+          alU.b = 1;
+          p1_y_pos.d = alU.out[1:0];
+      }
+    }
+    
+    if (p1_movement_button_edge.out[2]){ // io_button[3]
+      alU2.alufn_signal = b011110; //OR
+      alU2.a = p1_x_pos.q;
+      alU2.b = 0;   
+      if (alU2.out){ //player_x_pos.q not 0 can move left
+          alU.alufn_signal = b000001; //SUB
+          alU.a = p1_x_pos.q;
+          alU.b = 1;
+          p1_x_pos.d = alU.out[1:0];
+      }
+    }
+    if (p1_movement_button_edge.out[3]){ // io_button[4]
+      alU2.alufn_signal = b110101; //CMPLT
+      alU2.a = p1_x_pos.q;
+      alU2.b = COLUMN_DIMENSION-1;
+      if (alU2.out){ //player_x_pos.q < 3 can move right
+          alU.alufn_signal = b000000; //ADD
+          alU.a = p1_x_pos.q;
+          alU.b = 1;
+          p1_x_pos.d = alU.out[1:0];
+      }
+    } 
+    ///////////////////p1 movement end//////////////////////////////////////////////////////////////
+    
+    ///////////////////player 2 movement////////////////////////////////////////////////////////////
+    if (p2_movement_button_edge.out[0]){ //up
+      alU2.alufn_signal = b011110; //OR
+      alU2.a = p2_y_pos.q;
+      alU2.b = 0;   
+      if (alU2.out){ //y is not 0 -> can move up
+          alU.alufn_signal = b000001; //SUB (because up decreases y coordinate in the ram_p1)
+          alU.a = p2_y_pos.q;
+          alU.b = 1;
+         p2_y_pos.d = alU.out[1:0];
+      }
+    }
+    
+    if (p2_movement_button_edge.out[1]){
+      alU2.alufn_signal = b110101; //CMPLT
+      alU2.a = p2_y_pos.q;
+      alU2.b = COLUMN_DIMENSION-1;
+      if (alU2.out){ //player_y_pos.q < 3 can move down
+          alU.alufn_signal = b000000; //ADD (because down increases y coordinate in the ram_p2
+          alU.a = p2_y_pos.q;
+          alU.b = 1;
+          p2_y_pos.d = alU.out[1:0];
+      }
+    }
+    
+    if (p2_movement_button_edge.out[2]){ // io_button[3]
+      alU2.alufn_signal = b011110; //OR
+      alU2.a = p2_x_pos.q;
+      alU2.b = 0;   
+      if (alU2.out){ //player_x_pos.q not 0 can move left
+          alU.alufn_signal = b000001; //SUB
+          alU.a = p2_x_pos.q;
+          alU.b = 1;
+          p2_x_pos.d = alU.out[1:0];
+      }
+    }
+    if (p2_movement_button_edge.out[3]){ // io_button[4]
+      alU2.alufn_signal = b110101; //CMPLT
+      alU2.a = p2_x_pos.q;
+      alU2.b = COLUMN_DIMENSION-1;
+      if (alU2.out){ //player_x_pos.q < 3 can move right
+          alU.alufn_signal = b000000; //ADD
+          alU.a = p2_x_pos.q;
+          alU.b = 1;
+          p2_x_pos.d = alU.out[1:0];
+      }
+    } 
+    ///////////////////p2 movement end///////////////////////////////////////////////////////////////
+
+    
+    // update the flag 
+    if (|p1_movement_button_edge.out | start_button_edge.out){
+       update_ram_p1_flag.d = 1;
+    }
+    //if (|p2_movement_button_edge.out | start_button_edge.out){
+    if (|p2_movement_button_edge.out | start_button_edge.out){
+       update_ram_p2_flag.d = 1;
+    }
+        //what i add
+    if (start_button_edge.out){
+      start_ram_p1_flag.d = 1;
+      start_ram_p2_flag.d = 1;
+      alU2.alufn_signal = b110101; //CMPLT
+      alU2.a = rom_address.q;
+      alU2.b = 2;
+      if (alU2.out){  
+      //if (rom_address.q < 2){
+      alU.alufn_signal = b000000; //ADD (because down increases y coordinate in the ram_p1)
+      alU.a = rom_address.q;
+      alU.b = 1;
+      rom_address.d = alU.out[1:0];}       
+      //rom_address.d = rom_address.q + 1;}
+      else{rom_address.d =0;}
+    }
+    ram_p1.start = 0; // what i add
+    ram_p2.start = 0; // what i add
+    
+    
+    // connect player location to ram_p1, set update as 0 initially
+    ram_p1.player_x_pos = p1_x_pos.q; 
+    ram_p1.player_y_pos = p1_y_pos.q;
+    ram_p1.map_num_au = rom_address.q;
+    ram_p1.update = 0; 
+    
+    ram_p2.player_x_pos = p2_x_pos.q; 
+    ram_p2.player_y_pos = p2_y_pos.q;
+    ram_p2.map_num_au = rom_address.q;
+    ram_p2.update = 0; 
+    
+    led_strip_p1.update = 0; // do not refresh by default
+    led_strip_p1.clear = 0; // do not clear by default
+    led_strip_p2.update = 0; // do not refresh by default
+    led_strip_p2.clear = 0; // do not clear by default
+    
+    
+    // connect reverser to led_strip_p1 
+    index_reverser1.original_pixel_address = led_strip_p1.pixel_address;
+    index_reverser1.writer_pixel_done = led_strip_p1.next_pixel;
+    
+    index_reverser2.original_pixel_address = led_strip_p2.pixel_address;
+    index_reverser2.writer_pixel_done = led_strip_p2.next_pixel;
+    
+    index_reverser1.activate = 1; // we use led matrix here as example, always activate index reverser
+    
+    index_reverser2.activate = 1; // we use led matrix here as example, always activate index reverser
+    
+
+    // use io_dip[2:0]  to encode 12 unique pixel values at most (24 bits)
+    case (state.q){
+      state.UPDATE_RAM_P1:
+             // when ram_p1 is ready, and led is idling at RESET state, we load the strip
+             if (ram_p1.ready & led_strip_p1.reset){
+                // clear flag 
+                update_ram_p1_flag.d = 0;
+                start_ram_p1_flag.d = 0; //what i add
+                state.d = state.REFRESH_P1;
+                ram_p1.address = index_reverser1.effective_pixel_address;
+                led_strip_p1.update = 1;
+              }
+        
+        led[2:0] = b001;
+        
+        state.UPDATE_RAM_P2:
+             // when ram_p1 is ready, and led is idling at RESET state, we load the strip
+               if (ram_p2.ready & led_strip_p2.reset){
+                  // clear flag 
+                  update_ram_p2_flag.d = 0;
+                  start_ram_p2_flag.d = 0; //what i add
+                  state.d = state.REFRESH_P2;
+                  ram_p2.address = index_reverser2.effective_pixel_address;
+                  led_strip_p2.update = 1;
+                }
+        
+        led[2:0] = b010;
+      
+      state.REFRESH_P1:
+            // if at the last FPGA clock cycle for this bit, advance the address first because our ram_p1 needs 1 additional clock cycle to work
+            if (led_strip_p1.next_pixel){
+              alU.alufn_signal = b000000; //ADD
+              alU.a = led_strip_p1.pixel_address;
+              alU.b = 1;
+              index_reverser1.original_pixel_address = alU.out[3:0];
+            }
+      
+            // pass this to ram_p1 
+            ram_p1.address = index_reverser1.effective_pixel_address;
+           
+            // wait until we are all done in updating our LED;
+            if (led_strip_p1.done){ //seeing if it goes to UPDATE_RAM_P2? 
+                state.d = state.IDLE;
+            }
+        
+            led[2:0] = b011;
+        
+      state.REFRESH_P2:
+            // if at the last FPGA clock cycle for this bit, advance the address first because our ram_p1 needs 1 additional clock cycle to work
+            if (led_strip_p2.next_pixel){
+              index_reverser2.original_pixel_address = led_strip_p2.pixel_address + 1;
+            }
+      
+            // pass this to ram_p1 
+            ram_p2.address = index_reverser2.effective_pixel_address;
+
+            // wait until we are all done in updating our LED;
+            if (led_strip_p2.done){
+                state.d = state.IDLE;
+            }
+        
+           if(ram_p1.clear_to_au){
+            state.d = state.UPDATE_RAM_P1;        
+          }
+            led[2:0] = b100;
+        
+     state.IDLE:
+        //if (ram_p1.running)
+        state.d = state.IDLE;
+        if(~(ram_p1.i_lost|ram_p1.i_won|ram_p2.i_lost|ram_p2.i_won)){ //does this stop the player from moving
+        if (update_ram_p1_flag.q){ // if there's movement update
+            state.d = state.UPDATE_RAM_P1;
+            ram_p1.update = 1;}
+        if (update_ram_p2_flag.q){ // if there's movement update
+        state.d = state.UPDATE_RAM_P2;
+        ram_p2.update = 1;}  // send update signal to ram_p1 first, dont clear the update flag yet 
+          }  // send update signal to ram_p1 first, dont clear the update flag yet 
+          
+        if (start_ram_p1_flag.q){ //what i add
+            state.d = state.UPDATE_RAM_P1;
+          ram_p1.start =1;
+            if (rom_address.q == 0){
+          p1_x_pos.d =b00;
+          p1_y_pos.d =b00;}
+           else if (rom_address.q == 1){
+          p1_x_pos.d =b00;
+          p1_y_pos.d =b11;}
+              else if (rom_address.q == 2){
+          p1_x_pos.d =b11;
+          p1_y_pos.d =b00;}
+   
+        }
+          if(ram_p1.clear_to_au){
+            state.d = state.UPDATE_RAM_P1;   
+          }
+          if(ram_p2.clear_to_au){
+            state.d = state.UPDATE_RAM_P2;
+          ram_p1.clear =1;}
+           
+        if (start_ram_p2_flag.q){ //what i add
+            state.d = state.UPDATE_RAM_P2;
+          ram_p2.start =1;
+            if (rom_address.q == 0){
+          p2_x_pos.d =b00;
+          p2_y_pos.d =b00;}
+           else if (rom_address.q == 1){
+          p2_x_pos.d =b00;
+          p2_y_pos.d =b11;}
+              else if (rom_address.q == 2){
+          p2_x_pos.d =b11;
+          p2_y_pos.d =b00;}   
+        }  
+        led[2:0] = b101;
+
+        // test reverser 
+        index_reverser1.original_pixel_address = ram_p1.debug_address_pointer;
+    }
+       
+    led_strip_p2.color = LEDCOLOR[ram_p2.out_encoding]; 
+    led_strip_p1.color = LEDCOLOR[ram_p1.out_encoding];
+      
+    if (ram_p1.i_lost | ram_p2.i_won){
+    led_strip_p1.update =1;
+    led_strip_p2.update =1;
+    led_strip_p1.color = LEDCOLOR[b01]; //01 is red
+    led_strip_p2.color =  LEDCOLOR[b10]; //10 is green 
+    } 
+    
+    if (ram_p1.i_won|ram_p2.i_lost){
+    led_strip_p1.update =1;
+    led_strip_p2.update =1;
+    led_strip_p1.color = LEDCOLOR[b10]; //10 is green
+    led_strip_p2.color = LEDCOLOR[b01]; //01 is red
+    }
+    
+    outled = led_strip_p1.led;
+    outled2 = led_strip_p2.led;
+    
+    // debug 
+    io_led[0] = c{p1_y_pos.q, p1_x_pos.q};
+   
+    io_led[2] = ram_p1.debug_address_pointer;
+    io_led[1] = index_reverser1.effective_pixel_address;
+   
+    io_led[2][7] = update_ram_p1_flag.q;
+    led[7:5] = ram_p1.debug_data;
+    
+    
+}
+}

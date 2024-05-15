@@ -1,0 +1,40 @@
+module map_rom#(
+    DEPTH= 16 : DEPTH > 0
+  ) (
+    input map_num[2],
+    //input address[$clog2(DEPTH)], // word addressing expected = 4 bits
+    output out_encoding[16][2]
+  ) {
+  
+  const MAP_0_ROM = {
+  b01, b00, b00, b00, 
+  b00, b00, b01, b00, 
+  b00, b01, b01, b00,
+  b00, b10, b01, b11 //index 0 is rightmost
+  }; 
+  
+  const MAP_1_ROM = {
+    b00, b10, b01, b11,
+    b00, b01, b00, b00,
+    b00, b01, b00, b01,
+    b00, b00, b00, b01 //index 0 is rightmost
+  };
+  
+  const MAP_2_ROM = {
+    b00, b00, b00, b10,
+    b00, b01, b01, b00,
+    b00, b01, b00, b00,
+    b11, b00, b00, b01 //index 0 is rightmost
+  };
+
+  always {
+    case (map_num){
+      b00: out_encoding = MAP_0_ROM;
+      b01: out_encoding = MAP_1_ROM;
+      b10: out_encoding = MAP_2_ROM;
+      default:
+      out_encoding = MAP_0_ROM;
+    
+  }
+}
+}
