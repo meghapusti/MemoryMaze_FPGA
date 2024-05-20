@@ -1,21 +1,6 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-24ddc0f5d75046c5622901739e7c5dd533143b0c8e959d652212380cedb1ea36.svg)](https://classroom.github.com/a/5YTzVbxp)
-# 50.002 1D Project Group (Group_34)
 
-### Group Members
+# Memory Maze (FPGA)
 
-Aung Khant Moe  1007196
-
-Pusti Megha     1007128
-
-Mali Janya      1007149
-
-Koo Rou Zhen    1007038
-
-Khoo Zi Qi      1006984
-
-Glenda Koh      1007013
-
-Justin Cho      1007496
 
 ### The Project
 
@@ -37,6 +22,12 @@ Memorization: Upon pressing start, the restricted grids will flash for a brief m
 Navigation: Players use 4 buttons to move left, right, up, or down on the grid. They must navigate through the grid to reach the finishing zone. 
 
 Winning: The first player to reach the finishing zone without touching any of the restricted grids wins the game. The other player automatically loses.
+
+
+
+![CompStruct_Poster](https://github.com/meghapusti/MemoryMaze_FPGA/assets/134662739/3db6f942-6bbf-4390-964b-3e06c3f9b4c5)
+
+
 
 ## Modules Overview
 
